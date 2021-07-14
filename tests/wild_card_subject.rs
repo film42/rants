@@ -1,6 +1,7 @@
 mod common;
 
 use common::NatsServer;
+use futures::StreamExt;
 use rants::Client;
 
 #[tokio::test(flavor = "multi_thread")]
@@ -27,16 +28,16 @@ async fn wild_card_subject() {
     let ab_subject = "test.a.b".parse().unwrap();
     client.publish(&ab_subject, &[3]).await.unwrap();
 
-    assert_eq!(wild_card_subscription.recv().await.unwrap().payload(), &[1]);
-    assert_eq!(wild_card_subscription.recv().await.unwrap().payload(), &[2]);
-    assert_eq!(wild_card_subscription.recv().await.unwrap().payload(), &[3]);
+    assert_eq!(wild_card_subscription.next().await.unwrap().payload(), &[1]);
+    assert_eq!(wild_card_subscription.next().await.unwrap().payload(), &[2]);
+    assert_eq!(wild_card_subscription.next().await.unwrap().payload(), &[3]);
 
-    assert_eq!(a_subscription.recv().await.unwrap().payload(), &[1]);
-    assert_eq!(a_subscription.recv().await.unwrap().payload(), &[2]);
+    assert_eq!(a_subscription.next().await.unwrap().payload(), &[1]);
+    assert_eq!(a_subscription.next().await.unwrap().payload(), &[2]);
 
     client.disconnect().await;
     std::mem::drop(client);
 
-    assert!(wild_card_subscription.recv().await.is_none());
-    assert!(a_subscription.recv().await.is_none());
+    assert!(wild_card_subscription.next().await.is_none());
+    assert!(a_subscription.next().await.is_none());
 }

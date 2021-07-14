@@ -96,13 +96,11 @@ use crate::{
 pub use native_tls_crate as native_tls;
 #[cfg(feature = "rustls-tls")]
 pub use rustls;
-pub use tokio::sync::{
-    mpsc::Receiver as MpscReceiver, mpsc::Sender as MpscSender, watch::Receiver as WatchReceiver,
-};
+pub use tokio::sync::{mpsc::Sender as MpscSender, watch::Receiver as WatchReceiver};
 
 pub use crate::types::{
     error, Address, Authorization, ClientRef, ClientRefMut, ClientState, Connect, Info, Msg,
-    ProtocolError, Sid, Subject, SubjectBuilder, Subscription,
+    ProtocolError, Sid, Subject, SubjectBuilder, Subscription, SubscriptionReceiver,
 };
 
 const TCP_SOCKET_DISCONNECTED_MESSAGE: &str = "TCP socket was disconnected";
@@ -396,7 +394,7 @@ impl Client {
         &self,
         subject: &Subject,
         buffer: usize,
-    ) -> Result<(Sid, MpscReceiver<Msg>)> {
+    ) -> Result<(Sid, SubscriptionReceiver<Msg>)> {
         self.subscribe_with_optional_queue_group(subject, None, buffer)
             .await
     }
@@ -407,7 +405,7 @@ impl Client {
         subject: &Subject,
         queue_group: &str,
         buffer: usize,
-    ) -> Result<(Sid, MpscReceiver<Msg>)> {
+    ) -> Result<(Sid, SubscriptionReceiver<Msg>)> {
         self.subscribe_with_optional_queue_group(subject, Some(queue_group), buffer)
             .await
     }
@@ -425,7 +423,7 @@ impl Client {
         subject: &Subject,
         queue_group: Option<&str>,
         buffer: usize,
-    ) -> Result<(Sid, MpscReceiver<Msg>)> {
+    ) -> Result<(Sid, SubscriptionReceiver<Msg>)> {
         let mut client = self.lock().await;
         client
             .subscribe_with_optional_queue_group(subject, queue_group, buffer)
@@ -992,9 +990,9 @@ impl SyncClient {
 
     async fn request_wildcard_handler(
         wrapped_client: Arc<Mutex<Self>>,
-        mut subscription_rx: MpscReceiver<Msg>,
+        mut subscription_rx: SubscriptionReceiver<Msg>,
     ) {
-        while let Some(msg) = subscription_rx.recv().await {
+        while let Some(msg) = subscription_rx.next().await {
             let mut client = wrapped_client.lock().await;
             if let Some(requester_tx) = client.request_inbox_mapping.remove(&msg.subject()) {
                 requester_tx.send(msg).await.unwrap_or_else(|err| {
@@ -1030,7 +1028,7 @@ impl SyncClient {
         &mut self,
         subject: &Subject,
         buffer: usize,
-    ) -> Result<(Sid, MpscReceiver<Msg>)> {
+    ) -> Result<(Sid, SubscriptionReceiver<Msg>)> {
         self.subscribe_with_optional_queue_group(subject, None, buffer)
             .await
     }
@@ -1040,7 +1038,7 @@ impl SyncClient {
         subject: &Subject,
         queue_group: Option<&str>,
         buffer: usize,
-    ) -> Result<(Sid, MpscReceiver<Msg>)> {
+    ) -> Result<(Sid, SubscriptionReceiver<Msg>)> {
         if let ConnectionState::Connected(_, writer) = &mut self.state {
             let (tx, rx) = mpsc::channel(buffer);
             let subscription =
@@ -1048,7 +1046,7 @@ impl SyncClient {
             Self::write_line(writer, ClientControl::Sub(&subscription)).await?;
             let sid = subscription.sid();
             self.subscriptions.insert(sid, subscription);
-            Ok((sid, rx))
+            Ok((sid, SubscriptionReceiver::new(rx)))
         } else {
             Err(Error::NotConnected)
         }

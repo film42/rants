@@ -17,6 +17,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 use tokio::sync::mpsc::Sender as MpscSender;
+use tokio_stream::wrappers::ReceiverStream as MpscReceiverStream;
 
 use crate::util;
 
@@ -606,6 +607,11 @@ impl Subscription {
         self.unsubscribe_after
     }
 }
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+
+/// Proxy the mpsc receiver stream type to protect the interface from breaking changes
+pub type SubscriptionReceiver<T> = MpscReceiverStream<T>;
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 

@@ -1,6 +1,7 @@
 mod common;
 
 use common::NatsServer;
+use futures::StreamExt;
 use rants::Client;
 use tokio::runtime::Runtime;
 
@@ -21,7 +22,7 @@ fn blocking() {
     let subject = "test".parse().unwrap();
     let (_, mut subscription) = rt.block_on(client.subscribe(&subject, 1)).unwrap();
     rt.block_on(client.publish(&subject, b"test")).unwrap();
-    let result = rt.block_on(subscription.recv()).unwrap();
+    let result = rt.block_on(subscription.next()).unwrap();
     assert_eq!(result.payload(), b"test");
 
     rt.block_on(client.disconnect());

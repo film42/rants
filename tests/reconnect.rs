@@ -1,6 +1,7 @@
 mod common;
 
 use common::NatsServer;
+use futures::StreamExt;
 use rants::Client;
 
 #[tokio::test(flavor = "multi_thread")]
@@ -23,8 +24,8 @@ async fn reconnect() {
     client.publish(&subject, &[1]).await.unwrap();
     client.publish(&subject, &[2]).await.unwrap();
 
-    assert_eq!(subscription.recv().await.unwrap().into_payload(), &[1]);
-    assert_eq!(subscription.recv().await.unwrap().into_payload(), &[2]);
+    assert_eq!(subscription.next().await.unwrap().into_payload(), &[1]);
+    assert_eq!(subscription.next().await.unwrap().into_payload(), &[2]);
 
     // Disconnect
     client.disconnect().await;
@@ -39,11 +40,11 @@ async fn reconnect() {
     client.publish(&subject, &[4]).await.unwrap();
     client.publish(&subject, &[5]).await.unwrap();
 
-    assert_eq!(subscription.recv().await.unwrap().payload(), &[4]);
-    assert_eq!(subscription.recv().await.unwrap().payload(), &[5]);
+    assert_eq!(subscription.next().await.unwrap().payload(), &[4]);
+    assert_eq!(subscription.next().await.unwrap().payload(), &[5]);
 
     client.disconnect().await;
     std::mem::drop(client);
 
-    assert!(subscription.recv().await.is_none());
+    assert!(subscription.next().await.is_none());
 }
