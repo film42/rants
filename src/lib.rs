@@ -39,7 +39,7 @@
 //!     .unwrap();
 //!
 //! // Read a message from the subscription
-//! let message = subscription.next().await.unwrap();
+//! let message = subscription.recv().await.unwrap();
 //! let message = String::from_utf8(message.into_payload()).unwrap();
 //! println!("Received '{}'", message);
 //!
@@ -77,7 +77,7 @@ use tokio::{
         mpsc, oneshot,
         watch::{self, Sender as WatchSender},
     },
-    time::{self, Elapsed},
+    time::{self, error::Elapsed},
 };
 use tokio_util::codec::FramedRead;
 use uuid::Uuid;
@@ -721,7 +721,7 @@ impl SyncClient {
                     connect_attempts,
                     addresses_len
                 );
-                time::delay_for(delay).await;
+                time::sleep(delay).await;
             }
             connect_attempts += 1;
 
@@ -936,7 +936,9 @@ impl SyncClient {
             let mut state_stream = client.state_stream();
             // Spawn a future waiting for the disconnected state
             tokio::spawn(async move {
-                while let Some(state) = state_stream.next().await {
+                while state_stream.changed().await.is_ok() {
+                    let state = &*state_stream.borrow();
+
                     if state.is_disconnected() {
                         tx.send(()).expect("to send disconnect signal");
                         break;
@@ -992,9 +994,9 @@ impl SyncClient {
         wrapped_client: Arc<Mutex<Self>>,
         mut subscription_rx: MpscReceiver<Msg>,
     ) {
-        while let Some(msg) = subscription_rx.next().await {
+        while let Some(msg) = subscription_rx.recv().await {
             let mut client = wrapped_client.lock().await;
-            if let Some(mut requester_tx) = client.request_inbox_mapping.remove(&msg.subject()) {
+            if let Some(requester_tx) = client.request_inbox_mapping.remove(&msg.subject()) {
                 requester_tx.send(msg).await.unwrap_or_else(|err| {
                     warn!("Could not write response to pending request via mapping channel. Skipping! Err: {}", err);
                     debug_assert!(false);
@@ -1121,11 +1123,13 @@ impl SyncClient {
             let mut client = wrapped_client.lock().await;
             let mut pong_stream = client.pong_stream();
             // Clear the current value
-            pong_stream.next().now_or_never();
+            pong_stream.changed().now_or_never();
             client.ping().await?;
             pong_stream
         };
-        pong_stream.next().await;
+        if let Err(err) = pong_stream.changed().await {
+            error!("Failed to receive PONG, err: {}", err);
+        }
         Ok(())
     }
 
@@ -1260,8 +1264,8 @@ impl SyncClient {
                 }
             }
             ServerMessage::Ping => {
-                if let Err(e) = wrapped_client.lock().await.ping_tx.broadcast(()) {
-                    error!("Failed to broadcast {}, err: {}", util::PING_OP_NAME, e);
+                if let Err(e) = wrapped_client.lock().await.ping_tx.send(()) {
+                    error!("Failed to send {}, err: {}", util::PING_OP_NAME, e);
                 }
                 // Spawn a task to send a pong replying to the ping
                 let wrapped_client = Arc::clone(&wrapped_client);
@@ -1273,27 +1277,27 @@ impl SyncClient {
                 });
             }
             ServerMessage::Pong => {
-                if let Err(e) = wrapped_client.lock().await.pong_tx.broadcast(()) {
-                    error!("Failed to broadcast {}, err: {}", util::PONG_OP_NAME, e);
+                if let Err(e) = wrapped_client.lock().await.pong_tx.send(()) {
+                    error!("Failed to send {}, err: {}", util::PONG_OP_NAME, e);
                 }
             }
             ServerMessage::Ok => {
-                if let Err(e) = wrapped_client.lock().await.ok_tx.broadcast(()) {
-                    error!("Failed to broadcast {}, err: {}", util::OK_OP_NAME, e);
+                if let Err(e) = wrapped_client.lock().await.ok_tx.send(()) {
+                    error!("Failed to send {}, err: {}", util::OK_OP_NAME, e);
                 }
             }
             ServerMessage::Err(e) => {
                 error!("Protocol error, err: '{}'", e);
-                if let Err(e) = wrapped_client.lock().await.err_tx.broadcast(e) {
-                    error!("Failed to broadcast {}, err: {}", util::ERR_OP_NAME, e);
+                if let Err(e) = wrapped_client.lock().await.err_tx.send(e) {
+                    error!("Failed to send {}, err: {}", util::ERR_OP_NAME, e);
                 }
             }
         }
     }
 
     fn handle_info_message(&mut self, info: Info) {
-        if let Err(e) = self.info_tx.broadcast(info) {
-            error!("Failed to broadcast {}, err: {}", util::INFO_OP_NAME, e);
+        if let Err(e) = self.info_tx.send(info) {
+            error!("Failed to send {}, err: {}", util::INFO_OP_NAME, e);
         }
     }
 
@@ -1310,7 +1314,9 @@ impl SyncClient {
     // Create a future that waits for the disconnecting state.
     async fn disconnecting(wrapped_client: Arc<Mutex<Self>>) {
         let mut state_stream = wrapped_client.lock().await.state_stream();
-        while let Some(state) = state_stream.next().await {
+        while state_stream.changed().await.is_ok() {
+            let state = &*state_stream.borrow();
+
             if state.is_disconnecting() {
                 break;
             }
@@ -1427,11 +1433,11 @@ impl SyncClient {
             "Transitioned to state '{}' from '{}'",
             next_client_state, previous_client_state
         );
-        // If we can not broadcast the state transition, we could end up in an inconsistent
+        // If we can not send the state transition, we could end up in an inconsistent
         // state. This would be very bad so instead panic. This should never happen.
         self.state_tx
-            .broadcast(next_client_state)
-            .expect("to broadcast state transition");
+            .send(next_client_state)
+            .expect("to send state transition");
         result
     }
 }
@@ -1529,8 +1535,8 @@ impl Request {
 
         // Use a timeout duration if it was provided by the caller.
         let next_message = match duration {
-            Some(duration) => tokio::time::timeout(duration, rx.next()).await?,
-            None => rx.next().await,
+            Some(duration) => tokio::time::timeout(duration, rx.recv()).await?,
+            None => rx.recv().await,
         };
 
         // Make sure we clean up on error (don't leave a dangling request

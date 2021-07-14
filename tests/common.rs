@@ -74,8 +74,8 @@ impl NatsServer {
 
         // Spawn a task to run the child and wait for the kill oneshot
         let (kill_tx, kill_rx) = oneshot::channel::<()>();
-        tokio::spawn(async {
-            match future::select(child, kill_rx).await {
+        tokio::spawn(async move {
+            match future::select(Box::pin(child.wait()), kill_rx).await {
                 Either::Left((Ok(_exit_status), _)) => panic!("nats exited early"),
                 Either::Left((Err(_), _)) => panic!("nats produced Err while running"),
                 Either::Right((Ok(()), _)) => (),

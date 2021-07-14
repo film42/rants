@@ -3,8 +3,9 @@ mod common;
 use common::NatsServer;
 use futures::{future, stream::StreamExt};
 use rants::Client;
+use tokio_stream::wrappers::ReceiverStream;
 
-#[tokio::test(threaded_scheduler)]
+#[tokio::test(flavor = "multi_thread")]
 async fn echo() {
     common::init();
     let _nats_server = NatsServer::new(&[]).await;
@@ -54,7 +55,7 @@ async fn echo() {
     future::join_all(publishers).await;
 
     // Check all messages received from the subscription
-    let mut messages = subscription
+    let mut messages = ReceiverStream::new(subscription)
         .take(number_of_messages)
         .map(|msg| {
             String::from_utf8(msg.into_payload())
