@@ -75,7 +75,7 @@ use tokio::{
     net::TcpStream,
     sync::{
         mpsc, oneshot,
-        watch::{self, Sender as WatchSender},
+        watch::{self, Receiver as WatchReceiver, Sender as WatchSender},
     },
     time::{self, error::Elapsed},
 };
@@ -96,11 +96,11 @@ use crate::{
 pub use native_tls_crate as native_tls;
 #[cfg(feature = "rustls-tls")]
 pub use rustls;
-pub use tokio::sync::{mpsc::Sender as MpscSender, watch::Receiver as WatchReceiver};
+pub use tokio::sync::mpsc::Sender as MpscSender;
 
 pub use crate::types::{
     error, Address, Authorization, ClientRef, ClientRefMut, ClientState, Connect, Info, Msg,
-    ProtocolError, Sid, Subject, SubjectBuilder, Subscription, SubscriptionReceiver,
+    ProtocolError, Sid, Subject, SubjectBuilder, Subscription, SubscriptionReceiver, WatchStream,
 };
 
 const TCP_SOCKET_DISCONNECTED_MESSAGE: &str = "TCP socket was disconnected";
@@ -188,7 +188,7 @@ impl Client {
     }
 
     /// Get a watch stream of `Client` state transitions
-    pub async fn state_stream(&self) -> WatchReceiver<ClientState> {
+    pub async fn state_stream(&self) -> WatchStream<ClientState> {
         self.lock().await.state_stream()
     }
 
@@ -468,27 +468,27 @@ impl Client {
     }
 
     /// Get a watch stream of [`INFO`](https://nats-io.github.io/docs/nats_protocol/nats-protocol.html#info) messages received from the server
-    pub async fn info_stream(&self) -> WatchReceiver<Info> {
+    pub async fn info_stream(&self) -> WatchStream<Info> {
         self.lock().await.info_stream()
     }
 
     /// Get a watch stream of [`PING`](https://nats-io.github.io/docs/nats_protocol/nats-protocol.html#pingpong) messages received from the server
-    pub async fn ping_stream(&self) -> WatchReceiver<()> {
+    pub async fn ping_stream(&self) -> WatchStream<()> {
         self.lock().await.ping_stream()
     }
 
     /// Get a watch stream of [`PONG`](https://nats-io.github.io/docs/nats_protocol/nats-protocol.html#pingpong) messages received from the server
-    pub async fn pong_stream(&self) -> WatchReceiver<()> {
+    pub async fn pong_stream(&self) -> WatchStream<()> {
         self.lock().await.pong_stream()
     }
 
     /// Get a watch stream of [`+OK`](https://nats-io.github.io/docs/nats_protocol/nats-protocol.html#okerr) messages received from the server
-    pub async fn ok_stream(&self) -> WatchReceiver<()> {
+    pub async fn ok_stream(&self) -> WatchStream<()> {
         self.lock().await.ok_stream()
     }
 
     /// Get a watch stream of [`-ERR`](https://nats-io.github.io/docs/nats_protocol/nats-protocol.html#okerr) messages received from the server
-    pub async fn err_stream(&self) -> WatchReceiver<ProtocolError> {
+    pub async fn err_stream(&self) -> WatchStream<ProtocolError> {
         self.lock().await.err_stream()
     }
 
@@ -603,8 +603,8 @@ impl SyncClient {
         self.state_rx.borrow().clone()
     }
 
-    fn state_stream(&self) -> WatchReceiver<ClientState> {
-        self.state_rx.clone()
+    fn state_stream(&self) -> WatchStream<ClientState> {
+        WatchStream::new(self.state_rx.clone())
     }
 
     pub fn info(&self) -> Info {
@@ -934,9 +934,7 @@ impl SyncClient {
             let mut state_stream = client.state_stream();
             // Spawn a future waiting for the disconnected state
             tokio::spawn(async move {
-                while state_stream.changed().await.is_ok() {
-                    let state = &*state_stream.borrow();
-
+                while let Some(state) = state_stream.next().await {
                     if state.is_disconnected() {
                         tx.send(()).expect("to send disconnect signal");
                         break;
@@ -1078,24 +1076,24 @@ impl SyncClient {
         }
     }
 
-    pub fn info_stream(&mut self) -> WatchReceiver<Info> {
-        self.info_rx.clone()
+    pub fn info_stream(&mut self) -> WatchStream<Info> {
+        WatchStream::new(self.info_rx.clone())
     }
 
-    pub fn ping_stream(&mut self) -> WatchReceiver<()> {
-        self.ping_rx.clone()
+    pub fn ping_stream(&mut self) -> WatchStream<()> {
+        WatchStream::new(self.ping_rx.clone())
     }
 
-    pub fn pong_stream(&mut self) -> WatchReceiver<()> {
-        self.pong_rx.clone()
+    pub fn pong_stream(&mut self) -> WatchStream<()> {
+        WatchStream::new(self.pong_rx.clone())
     }
 
-    pub fn ok_stream(&mut self) -> WatchReceiver<()> {
-        self.ok_rx.clone()
+    pub fn ok_stream(&mut self) -> WatchStream<()> {
+        WatchStream::new(self.ok_rx.clone())
     }
 
-    pub fn err_stream(&mut self) -> WatchReceiver<ProtocolError> {
-        self.err_rx.clone()
+    pub fn err_stream(&mut self) -> WatchStream<ProtocolError> {
+        WatchStream::new(self.err_rx.clone())
     }
 
     async fn ping(&mut self) -> Result<()> {
@@ -1121,13 +1119,11 @@ impl SyncClient {
             let mut client = wrapped_client.lock().await;
             let mut pong_stream = client.pong_stream();
             // Clear the current value
-            pong_stream.changed().now_or_never();
+            pong_stream.next().now_or_never();
             client.ping().await?;
             pong_stream
         };
-        if let Err(err) = pong_stream.changed().await {
-            error!("Failed to receive PONG, err: {}", err);
-        }
+        pong_stream.next().await;
         Ok(())
     }
 
@@ -1312,9 +1308,7 @@ impl SyncClient {
     // Create a future that waits for the disconnecting state.
     async fn disconnecting(wrapped_client: Arc<Mutex<Self>>) {
         let mut state_stream = wrapped_client.lock().await.state_stream();
-        while state_stream.changed().await.is_ok() {
-            let state = &*state_stream.borrow();
-
+        while let Some(state) = state_stream.next().await {
             if state.is_disconnecting() {
                 break;
             }

@@ -18,6 +18,7 @@ use std::{
 };
 use tokio::sync::mpsc::Sender as MpscSender;
 use tokio_stream::wrappers::ReceiverStream as MpscReceiverStream;
+use tokio_stream::wrappers::WatchStream as TokioWatchStream;
 
 use crate::util;
 
@@ -612,6 +613,11 @@ impl Subscription {
 
 /// Proxy the mpsc receiver stream type to protect the interface from breaking changes
 pub type SubscriptionReceiver<T> = MpscReceiverStream<T>;
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+
+/// Proxy the mpsc receiver stream type to protect the interface from breaking changes
+pub type WatchStream<T> = TokioWatchStream<T>;
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
